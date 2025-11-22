@@ -1,0 +1,336 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Ôn Thi An Toàn - GitHub Version</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+  <style>
+    :root{--primary:#005BAC;--bg:#f4f7fb;--white:#fff;--text:#212529;--correct:#198754;--wrong:#dc3545;}
+    body{font-family:Segoe UI, Roboto, Helvetica, Arial, sans-serif;background:var(--bg);margin:0;padding:20px;color:var(--text);line-height:1.5}
+    .container{max-width:900px;margin:0 auto;background:var(--white);padding:25px;border-radius:8px;box-shadow:0 4px 12px rgba(0,0,0,0.1)}
+    h2{text-align:center;color:var(--primary);margin-top:0}
+    
+    /* Khu vực điều khiển */
+    .controls{background:#e6eef7;padding:20px;border-radius:8px;margin-bottom:20px;text-align:center;border:1px solid #ced4da}
+    .btn{padding:10px 20px;border:none;border-radius:6px;cursor:pointer;font-weight:600;color:white;margin:5px;transition:0.2s}
+    .btn:hover{opacity:0.9}
+    .btn-file{background:var(--primary);position:relative;overflow:hidden}
+    .btn-file input{position:absolute;left:0;top:0;opacity:0;width:100%;height:100%;cursor:pointer}
+    .btn-learn{background:#0dcaf0;color:#000}
+    .btn-exam{background:#6610f2}
+    .btn-reset{background:#dc3545}
+
+    /* Câu hỏi & Đáp án */
+    .q-box{margin-bottom:20px;padding:15px;border:1px solid #dee2e6;border-radius:6px;background:#fff}
+    .q-txt{font-weight:700;margin-bottom:10px;font-size:1.05rem}
+    .opt{padding:10px 15px;margin:5px 0;border:1px solid #ced4da;border-radius:4px;cursor:pointer;display:flex;align-items:center;}
+    .opt:hover{background:#e9ecef}
+    .opt-char{font-weight:bold;margin-right:10px;min-width:25px}
+    
+    /* Màu sắc trạng thái */
+    .opt.selected{background:#cfe2ff;border-color:#9ec5fe;font-weight:600}
+    .opt.correct-answer{background:#d1e7dd;border-color:#badbcc;color:var(--correct);font-weight:600}
+    .opt.correct-answer::after{content:"✓ Đáp án";margin-left:auto;font-weight:bold}
+    .opt.wrong-selected{background:#f8d7da;border-color:#f5c2c7;color:var(--wrong)}
+    .opt.wrong-selected::after{content:"✕ Sai";margin-left:auto;font-weight:bold}
+
+    /* Kết quả */
+    .result-bar{background:#d1e7dd;color:var(--correct);padding:15px;border-radius:6px;margin-bottom:20px;text-align:center;font-size:1.2rem;display:none;font-weight:bold}
+    
+    .guide{font-size:0.9rem;color:#6c757d;margin-bottom:10px;text-align:left;background:#f8f9fa;padding:10px;border-radius:4px;border-left:4px solid var(--primary)}
+  </style>
+</head>
+<body>
+
+<div class="container">
+  <h2>📝 ÔN THI TRẮC NGHIỆM AN TOÀN</h2>
+  
+  <div class="controls">
+    <div id="upload-area">
+      <div class="guide">
+        <b>Hướng dẫn:</b>
+        <br>- File dữ liệu của bạn cần có cấu trúc: **Câu hỏi + Phương án** nằm ở **Cột A**.
+        <br>- Đánh dấu **"X"** vào **Cột B** ở dòng chứa đáp án đúng.
+      </div>
+      <button class="btn btn-file">
+        📂 Chọn File Excel/CSV (.xlsx, .csv)
+        <input type="file" id="inp-file" accept=".xlsx, .xls, .csv">
+      </button>
+    </div>
+
+    <div id="menu-area" style="display:none">
+      <div style="margin-bottom:10px;color:var(--correct);font-weight:bold" id="db-status"></div>
+      <button class="btn btn-learn" onclick="startMode('learn')">📖 Chế độ Học (Xem tất cả)</button>
+      <button class="btn btn-exam" onclick="startMode('exam', 50)">📝 Thi Thử (Đề ngẫu nhiên 50 câu)</button>
+      <button class="btn btn-exam" onclick="startMode('fixed_exam', 50)">📝 Đề Thi Cứng (50 câu cố định)</button>
+      <button class="btn btn-reset" onclick="resetData()">🗑️ Xóa Dữ Liệu</button>
+      <div class="guide" id="fixed-exam-status" style="margin-top:10px;display:none;"></div>
+    </div>
+  </div>
+
+  <div id="result-bar" class="result-bar"></div>
+  <div id="quiz-area"></div>
+  
+  <div style="text-align:center;display:none;margin-top:20px" id="submit-div">
+    <button class="btn btn-exam" onclick="submitExam()" style="padding:12px 30px;font-size:1.1rem">🏁 NỘP BÀI</button>
+  </div>
+</div>
+
+<script>
+let questionBank = [];
+let currentList = [];
+let userAns = {}; 
+let mode = 'learn'; 
+let fixedExamIDs = []; // Mảng chứa ID của 50 câu cố định cho đề cứng
+
+// --- 1. KHỞI TẠO VÀ LƯU TRỮ ---
+window.onload = function() {
+  const saved = localStorage.getItem('safety_exam_db');
+  const savedFixedIDs = localStorage.getItem('safety_exam_fixed_ids');
+  
+  if (saved) {
+    questionBank = JSON.parse(saved);
+    if (savedFixedIDs) {
+        fixedExamIDs = JSON.parse(savedFixedIDs);
+    }
+    showMenu();
+  }
+}
+
+function resetData(){
+  if(confirm("Bạn muốn xóa dữ liệu để nạp file mới?")){
+    localStorage.removeItem('safety_exam_db');
+    localStorage.removeItem('safety_exam_fixed_ids');
+    location.reload();
+  }
+}
+
+// --- 2. ĐỌC FILE EXCEL/CSV (XỬ LÝ DỮ LIỆU) ---
+document.getElementById('inp-file').addEventListener('change', function(e) {
+  const file = e.target.files[0];
+  if(!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    const data = new Uint8Array(e.target.result);
+    const workbook = XLSX.read(data, {type: 'array'});
+    const sheetName = workbook.SheetNames[0];
+    const sheet = workbook.Sheets[sheetName];
+    // Đọc ra dạng mảng, không dùng header 1 để đảm bảo đọc đúng cấu trúc lộn xộn
+    const json = XLSX.utils.sheet_to_json(sheet, {header: 1}); 
+
+    const processed = parseQuestionData(json);
+
+    if(processed.length > 0){
+      questionBank = processed;
+      localStorage.setItem('safety_exam_db', JSON.stringify(questionBank));
+      
+      // Khởi tạo đề cứng ngẫu nhiên lần đầu (nếu đủ câu)
+      if(questionBank.length >= 50 && fixedExamIDs.length === 0) {
+        fixedExamIDs = [...questionBank].sort(() => 0.5 - Math.random()).slice(0, 50).map(q => q.id);
+        localStorage.setItem('safety_exam_fixed_ids', JSON.stringify(fixedExamIDs));
+      }
+      
+      alert(`✅ Đã nạp thành công ${questionBank.length} câu hỏi!`);
+      showMenu();
+    } else {
+      alert("❌ Không đọc được dữ liệu câu hỏi. Vui lòng kiểm tra file Excel/CSV (Cột A: Câu hỏi/Phương án, Cột B: 'X' cho đáp án đúng).");
+    }
+  };
+  reader.readAsArrayBuffer(file);
+});
+
+function parseQuestionData(json) {
+    const questions = [];
+    let currentQ = null;
+    let optionChar = '';
+
+    json.forEach((row, rowIndex) => {
+        const colA = row[0] ? String(row[0]).trim() : '';
+        const colB = row[1] ? String(row[1]).trim().toUpperCase() : '';
+
+        // Bắt đầu một câu hỏi mới (Dòng chứa "Câu..." và không phải là phương án)
+        if (colA.startsWith('Câu') && colA.length > 5 && !colA.startsWith('A.') && !colA.startsWith('B.') && !colA.startsWith('C.') && !colA.startsWith('D.')) {
+            if (currentQ && currentQ.o.length > 0) {
+                questions.push(currentQ);
+            }
+            // Khởi tạo câu hỏi mới
+            currentQ = {
+                id: rowIndex, // Sử dụng index dòng để tạo ID
+                q: colA,
+                o: [],
+                a: -1 // Index đáp án đúng
+            };
+            optionChar = '';
+        } 
+        // Bắt đầu một Phương án
+        else if (currentQ && (colA.startsWith('A.') || colA.startsWith('B.') || colA.startsWith('C.') || colA.startsWith('D.'))) {
+            let optionText = colA;
+            if (optionText.startsWith('A.')) optionChar = 'A';
+            else if (optionText.startsWith('B.')) optionChar = 'B';
+            else if (optionText.startsWith('C.')) optionChar = 'C';
+            else if (optionText.startsWith('D.')) optionChar = 'D';
+
+            // Loại bỏ ký tự A., B., C., D. ở đầu
+            optionText = optionText.substring(optionText.indexOf('.') + 1).trim();
+
+            const optIdx = currentQ.o.length;
+            currentQ.o.push(optionText);
+
+            // Kiểm tra cột B có dấu "X" không
+            if (colB === 'X') {
+                currentQ.a = optIdx;
+            }
+        }
+    });
+
+    // Thêm câu hỏi cuối cùng
+    if (currentQ && currentQ.o.length > 0) {
+        questions.push(currentQ);
+    }
+    
+    // Lọc bỏ các câu hỏi không có đủ 2 phương án (lỗi dữ liệu) hoặc không có đáp án đúng
+    return questions.filter(q => q.o.length >= 2 && q.a !== -1);
+}
+
+
+function showMenu(){
+  document.getElementById('upload-area').style.display = 'none';
+  document.getElementById('menu-area').style.display = 'block';
+  document.getElementById('db-status').textContent = `Đã nạp: ${questionBank.length} câu hỏi.`;
+  
+  const fixedStatusEl = document.getElementById('fixed-exam-status');
+  if(fixedExamIDs.length === 50) {
+    fixedStatusEl.style.display = 'block';
+    fixedStatusEl.innerHTML = `✅ **Đề Thi Cứng** đã sẵn sàng (${fixedExamIDs.length} câu).`;
+  } else {
+    fixedStatusEl.style.display = 'block';
+    fixedStatusEl.innerHTML = `⚠️ Chưa đủ 50 câu để tạo **Đề Thi Cứng** (${questionBank.length} câu). Sẽ chạy chế độ ngẫu nhiên.`;
+  }
+  startMode('learn');
+}
+
+// --- 3. CHẾ ĐỘ HỌC / THI ---
+function startMode(m, count = 0){
+  mode = m;
+  userAns = {};
+  document.getElementById('result-bar').style.display = 'none';
+  document.getElementById('submit-div').style.display = (mode !== 'learn') ? 'block' : 'none';
+
+  if(mode === 'learn'){
+    currentList = questionBank;
+  } else if (mode === 'exam' || mode === 'fixed_exam'){
+    const allQ = [...questionBank];
+    let selectedQ;
+    
+    if(mode === 'fixed_exam' && fixedExamIDs.length === count) {
+        // Chế độ Đề Cứng (Fixed Exam)
+        selectedQ = allQ.filter(q => fixedExamIDs.includes(q.id));
+    } else {
+        // Chế độ Thi Thử Ngẫu Nhiên (Random Exam)
+        selectedQ = allQ.sort(() => 0.5 - Math.random());
+    }
+    
+    currentList = selectedQ.slice(0, count);
+    if(currentList.length < count) {
+        alert(`Không đủ ${count} câu hỏi để tạo đề thi. Chỉ có ${currentList.length} câu.`);
+    }
+    currentList = currentList.sort(() => 0.5 - Math.random()); // Xáo trộn cuối cùng
+  }
+  
+  render();
+  window.scrollTo(0,0);
+}
+
+function render(){
+  const area = document.getElementById('quiz-area');
+  area.innerHTML = '';
+  
+  currentList.forEach((item, idx) => {
+    const div = document.createElement('div');
+    div.className = 'q-box';
+    div.id = `q-${idx}`;
+    
+    let html = `<div class="q-txt">Câu ${idx+1}: ${item.q.replace(/Câu \d+:\s*/, '')}</div>`;
+    item.o.forEach((opt, i) => {
+      const char = String.fromCharCode(65+i);
+      html += `<div class="opt" data-option="${char}" onclick="handleClick(${idx}, ${i}, this)">
+        <span class="opt-char">${char}.</span> ${opt}
+      </div>`;
+    });
+    div.innerHTML = html;
+    area.appendChild(div);
+    
+    // Trong chế độ học, hiển thị đáp án đúng ngay lập tức
+    if (mode === 'learn' && item.a !== -1) {
+        div.querySelector(`.opt:nth-child(${item.a + 2})`).classList.add('correct-answer');
+        div.classList.add('locked'); // Khóa không cho click
+    }
+  });
+}
+
+// --- 4. XỬ LÝ CLICK ---
+function handleClick(qIdx, optIdx, el){
+  const q = currentList[qIdx];
+  const parent = el.parentElement;
+
+  // Chế độ HỌC: Báo ngay (Đã được xử lý trong render() ở phiên bản này, chỉ cần ngăn click)
+  if(mode === 'learn'){
+    return; 
+  }
+
+  // Chế độ THI: Chọn để đó
+  if(mode === 'exam' || mode === 'fixed_exam'){
+    const optChar = el.getAttribute('data-option');
+    userAns[qIdx] = optChar;
+    
+    // Bỏ chọn đáp án cũ
+    Array.from(parent.children).forEach(c => c.classList.remove('selected'));
+    
+    // Chọn đáp án mới
+    el.classList.add('selected');
+  }
+}
+
+// --- 5. NỘP BÀI ---
+function submitExam(){
+  if(!confirm("Nộp bài và xem điểm?")) return;
+  
+  let score = 0;
+  currentList.forEach((q, idx) => {
+    const parent = document.getElementById(`q-${idx}`);
+    const opts = parent.querySelectorAll('.opt');
+    const correctChar = String.fromCharCode(65+q.a);
+    const userAnswerChar = userAns[idx];
+    
+    // Khóa lại và xóa trạng thái chọn
+    opts.forEach(o => {
+      o.classList.remove('selected');
+      o.style.pointerEvents = 'none';
+    });
+
+    if(q.a !== -1){
+      // Hiện đáp án đúng
+      parent.querySelector(`.opt[data-option="${correctChar}"]`).classList.add('correct-answer'); 
+      
+      if(userAnswerChar !== undefined){
+        if(userAnswerChar === correctChar){
+          score++;
+        } else {
+          // Tô đỏ nếu chọn sai
+          parent.querySelector(`.opt[data-option="${userAnswerChar}"]`).classList.add('wrong-selected');
+        }
+      }
+    }
+  });
+
+  const bar = document.getElementById('result-bar');
+  bar.style.display = 'block';
+  bar.innerHTML = `KẾT QUẢ: ${score} / ${currentList.length} câu đúng`;
+  document.getElementById('submit-div').style.display = 'none';
+  window.scrollTo(0,0);
+}
+</script>
+</body>
+</html>
