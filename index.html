@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>IndexCU — Thi An Toàn Lao Động 2025</title>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.16.105/pdf.min.js"></script>
+  <style>
+    :root{--primary:#005BAC;--muted:#6b7280}
+    body{font-family:Arial,Helvetica,sans-serif;background:#f4f7fb;margin:0;padding:18px;color:#0b2440}
+    .wrap{max-width:1100px;margin:0 auto;background:#fff;border-radius:10px;padding:18px;box-shadow:0 8px 30px rgba(2,6,23,.06)}
+    h1{color:var(--primary);margin:0 0 8px 0}
+    .controls{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0}
+    .btn{background:var(--primary);color:white;border:none;padding:8px 12px;border-radius:8px;cursor:pointer}
+    input[type="text"]{flex:1;padding:8px;border-radius:8px;border:1px solid #e6eef7}
+    .muted{color:var(--muted)}
+    .qa-list{max-height:420px;overflow:auto;padding:6px;border:1px solid #e5e7eb;border-radius:8px;background:#fbfdff}
+    .exam-btn{background:#0b74b5}
+    .result{padding:12px;border-radius:8px;background:#f8fafc;border:1px solid #e6eef7;margin-top:12px}
+    .correct{background:#daf7dc}
+    .incorrect{background:#ffe3e3}
+    .option{padding:8px;border-radius:6px;margin:6px 0;border:1px solid #e6eef7}
+    .option.correct{border-color:green}
+    .option.incorrect{border-color:red}
+    pre{white-space:pre-wrap}
+    .small{font-size:0.9rem;color:var(--muted)}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Thi An Toàn Lao Động 2025 — IndexCU</h1>
+    <div class="small muted">File nguồn (đã upload): <code>/mnt/data/Thi an toàn lao động năm 2025.pdf</code></div>
+
+    <div class="controls">
+      <button class="btn" id="btn-load">Tải & Chuyển đổi PDF → Ngân hàng câu</button>
+      <button class="btn" id="btn-quick" disabled>📖 Học nhanh (Tất cả câu)</button>
+      <button class="btn" id="btn-gen" disabled>📝 Tạo 10 đề (50c/đề)</button>
+      <input id="search" type="text" placeholder="Tìm câu hỏi (ví dụ: 'cấp phiếu', 'điện cao áp')..." />
+      <button class="btn" id="btn-search">Tìm</button>
+    </div>
+
+    <div id="status" class="small muted">Trạng thái: Chưa tải dữ liệu.</div>
+
+    <div id="main" style="margin-top:12px">
+      <div id="quick" style="display:none">
+        <h3>Học nhanh — Ngân hàng câu</h3>
+        <div class="qa-list" id="qa-list"></div>
+      </div>
+
+      <div id="exams" style="display:none">
+        <h3>Đề thi đã sinh</h3>
+        <div id="exam-buttons" style="display:flex;gap:6px;flex-wrap:wrap"></div>
+        <div id="exam-view" style="margin-top:12px"></div>
+        <div id="exam-result" class="result" style="display:none"></div>
+      </div>
+
+      <div id="search-results" style="margin-top:12px"></div>
+    </div>
+
+    <hr style="margin:18px 0" />
+    <div class="small muted">
+      Hướng dẫn nhanh:
+      <ul>
+        <li>Nhấn <b>Tải & Chuyển đổi PDF</b> để trích xuất câu hỏi từ file PDF (đường dẫn mặc định: <code>/mnt/data/Thi an toàn lao động năm 2025.pdf</code>).</li>
+        <li>Sau khi tải xong, dùng <b>Học nhanh</b> hoặc <b>Tạo 10 đề</b>.</li>
+        <li>Kết quả bài thi: hiện điểm, đánh giá và khả năng xem lại từng câu (đáp án đúng được hiển thị nếu có trong PDF).</li>
+      </ul>
+    </div>
+  </div>
+
+<script>
+/*
+  indexcu.html
+  - Đọc PDF tại URL PDF_URL
+  - Trích câu theo pattern: Câu <số>:. Tiếp theo A., B., C., D. (hoặc A) B) ...)
+  - Nếu xuất hiện 'Đáp án' trong cùng khối sẽ lấy đáp án
+  - Sinh questionBank array runtime, rồi cung cấp UI: search, quick learn, gen exams, take exam, grade, review
+*/
+
+const PDF_URL = '/mnt/data/Thi an toàn lao động năm 2025.pdf'; // <-- đường dẫn file gốc (dùng trên máy anh)
+
+let questionBank = []; // sẽ chứa {q, options:[...], a (text|null), answerLetter|null, group|null}
+const QUESTIONS_PER_EXAM = 50;
+const TOTAL_EXAMS = 10;
+let exams = []; // mảng 10 đề
+let currentExam = null;
+let userAnswers = [];
+
+function setStatus(t){ document.getElementById('status').innerHTML = '<b>Trạng thái:</b> ' + t; }
+
+// load & parse PDF using pdf.js
+async function loadPdfAndParse(){
+  setStatus('Đang tải PDF và trích xuất nội dung...');
+  questionBank = [];
+  try {
+    const loadingTask = pdfjsLib.getDocument(PDF_URL);
+    const pdf = await loadingTask.promise;
+    let fullText = '';
+    for (let i=1;i<=pdf.numPages;i++){
+      const page = await pdf.getPage(i);
+      const content = await page.getTextContent();
+      const pageText = content.items.map(it=>it.str).join(' ');
+      fullText += '\\n' + pageText;
+    }
+
+    // Normalize some unicode characters and newlines
+    fullText = fullText.replace(/\\u00A0/g,' ').replace(/\\r/g,' ').replace(/\\n{2,}/g,'\\n');
+
+    // Split by 'AN TOÀN' sections optionally, but simpler: split by 'Câu <num>:' occurrences
+    const blocks = fullText.split(/\\bCâu\\s+\\d+\\s*[:\\.]/gi).slice(1); // first chunk before Câu1 is header
+    // We also find the list of Câu <n> labels to keep order
+    const labels = [...fullText.matchAll(/\\bCâu\\s+(\\d+)\\s*[:\\.]/gi)].map(m=>m[1]);
+
+    // iterate blocks and parse options
+    for (let i=0;i<blocks.length;i++){
+      const raw = blocks[i].trim();
+      if(!raw) continue;
+      // try to detect group heading before this block by searching backward a short distance
+      let group = null;
+      // options
+      const optionMatch = raw.match(/A[\\.|\\)]\\s*([^A-D\\n\\r]+)\\s*B[\\.|\\)]\\s*([^A-D\\n\\r]+)\\s*C[\\.|\\)]\\s*([^A-D\\n\\r]+)\\s*D[\\.|\\)]\\s*([^\\n\\r]+)/i);
+      if(!optionMatch){
+        // fallback: try to find A. lines individually
+        const optionRegex = /\\n?\\s*([A-D])[\\.\\)]\\s*([^\\n]+)/g;
+        const opts=[];
+        let m;
+        while((m=optionRegex.exec(raw))!==null){
+          opts.push(m[2].trim());
+        }
+        if(opts.length>=2){
+          // get question text as part before A.
+          const idx = raw.search(/\\n?\\s*A[\\.\\)]/i);
+          const qtext = idx!==-1 ? raw.slice(0,idx).trim() : raw.slice(0,200).trim();
+          // detect answer if present
+          const ansLetterMatch = raw.match(/Đáp án\\s*[:\\-–]?\\s*([A-D])/i);
+          const ansWordMatch = raw.match(/Đáp án\\s*[:\\-–]?\\s*([A-Za-zÀ-ỹ0-9\\s\\.,]+)/i);
+          const answerLetter = ansLetterMatch ? ansLetterMatch[1].toUpperCase() : null;
+          const aText = answerLetter ? opts[['A','B','C','D'].indexOf(answerLetter)] : (ansWordMatch ? ansWordMatch[1].trim(): null);
+          questionBank.push({ q: qtext.replace(/\\s+/g,' ').trim(), options: opts, a: aText? aText.trim(): null, answerLetter: answerLetter, group: group });
+        }
+      } else {
+        // using big match
+        const idx = raw.search(/A[\\.|\\)]/i);
+        const qtext = idx!==-1 ? raw.slice(0,idx).trim() : raw.slice(0,200).trim();
+        // Extract A-D
+        const optionRegex = /([A-D])[\\.\\)]\\s*([^A\\-D\\n\\r]+)/g;
+        const opts = [];
+        let m;
+        // simpler parse by splitting on ' A.' occurrences
+        // manual split:
+        const parts = raw.split(/\\n\\s*[A-D][\\.\\)]/g);
+        // first part is question text; following parts are options but may include next text - better to use a regex per letter:
+        for(let letter of ['A','B','C','D']){
+          const re = new RegExp(letter+'[\\.\\)]\\s*([^A-D\\n\\r]+)','i');
+          const mm = raw.match(re);
+          if(mm) opts.push(mm[1].trim());
+        }
+        const ansLetterMatch = raw.match(/Đáp án\\s*[:\\-–]?\\s*([A-D])/i);
+        const answerLetter = ansLetterMatch ? ansLetterMatch[1].toUpperCase() : null;
+        const aText = answerLetter ? opts[['A','B','C','D'].indexOf(answerLetter)] : null;
+        if(opts.length>=2){
+          questionBank.push({ q: qtext.replace(/\\s+/g,' ').trim(), options: opts, a: aText? aText.trim(): null, answerLetter: answerLetter, group: group });
+        }
+      }
+    }
+
+    // post-process: remove duplicates and short entries
+    questionBank = questionBank.filter(q=>q.q && q.options && q.options.length>=2);
+    // dedupe by question text
+    const seen = new Set();
+    questionBank = questionBank.filter(q=>{
+      const k = q.q.slice(0,120);
+      if(seen.has(k)) return false;
+      seen.add(k); return true;
+    });
+
+    setStatus(`Tải xong — ${questionBank.length} câu được trích xuất (kiểm tra đáp án).`);
+    document.getElementById('btn-quick').disabled = false;
+    document.getElementById('btn-gen').disabled = false;
+    // show brief preview
+    renderQuickPreview(30);
+  } catch(err){
+    console.error(err);
+    setStatus('Lỗi khi đọc PDF. Kiểm tra đường dẫn file trên máy (PDF_URL).');
+  }
+}
+
+function renderQuickPreview(n=20){
+  const container = document.getElementById('qa-list');
+  container.innerHTML = '';
+  for(let i=0;i<Math.min(n,questionBank.length);i++){
+    const it = questionBank[i];
+    const el = document.createElement('div');
+    el.style.padding='10px';
+    el.style.borderBottom='1px solid #eef2ff';
+    const q = document.createElement('div'); q.style.fontWeight='700'; q.textContent = `${i+1}. ${it.q}`;
+    const opts = document.createElement('div'); opts.style.marginTop='6px'; opts.innerHTML = it.options.map((o,j)=>`<div>${String.fromCharCode(65+j)}. ${o}</div>`).join('');
+    const ans = document.createElement('div'); ans.className='small muted'; ans.style.marginTop='6px';
+    ans.innerHTML = it.a ? `<b>Đáp án:</b> ${it.answerLetter ? it.answerLetter + ' — ' : ''}${it.a}` : `<b>Đáp án:</b> <i>chưa có</i>`;
+    el.appendChild(q); el.appendChild(opts); el.appendChild(ans);
+    container.appendChild(el);
+  }
+  document.getElementById('quick').style.display='block';
+}
+
+// search
+function searchQuestions(term){
+  const out = document.getElementById('search-results');
+  out.innerHTML = '';
+  if(!term){ out.innerHTML = '<div class="small muted">Nhập từ khóa để tìm.</div>'; return; }
+  const results = questionBank.filter(q=>q.q.toLowerCase().includes(term.toLowerCase()) || q.options.join(' ').toLowerCase().includes(term.toLowerCase()));
+  out.innerHTML = `<h4>Tìm thấy ${results.length} kết quả cho "${term}"</h4>`;
+  const list = document.createElement('div');
+  list.className='qa-list';
+  results.slice(0,200).forEach((r,idx)=>{
+    const d = document.createElement('div'); d.style.padding='8px'; d.style.borderBottom='1px solid #eee';
+    d.innerHTML = `<b>${idx+1}.</b> ${r.q}<div style="margin-top:6px">${r.options.map((o,i)=>`<div>${String.fromCharCode(65+i)}. ${o}</div>`).join('')}</div><div class="small muted" style="margin-top:6px">${r.a?('Đáp án: '+(r.answerLetter? r.answerLetter+' — ':'')+r.a):'Đáp án: chưa xác định'}</div>`;
+    list.appendChild(d);
+  });
+  out.appendChild(list);
+}
+
+// generate 10 exams
+function generateExams(){
+  if(questionBank.length < QUESTIONS_PER_EXAM){
+    alert('Ngân hàng câu < 50 — không thể tạo đề theo yêu cầu.');
+    return;
+  }
+  // shuffle questionBank copy
+  const shuffled = [...questionBank];
+  for(let i=shuffled.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [shuffled[i],shuffled[j]]=[shuffled[j],shuffled[i]]; }
+
+  exams = [];
+  let pointer = 0;
+  for(let e=0;e<9;e++){
+    const slice = shuffled.slice(pointer, pointer+QUESTIONS_PER_EXAM);
+    exams.push(slice);
+    pointer += QUESTIONS_PER_EXAM;
+  }
+  // exam 10
+  let rem = shuffled.slice(pointer);
+  const exam10 = [...rem];
+  const need = QUESTIONS_PER_EXAM - exam10.length;
+  if(need>0){
+    const pool = shuffled.slice(0,pointer);
+    for(let i=0;i<need;i++){
+      const pick = pool[Math.floor(Math.random()*pool.length)];
+      exam10.push(pick);
+    }
+  }
+  // shuffle exam10
+  for(let i=exam10.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [exam10[i],exam10[j]]=[exam10[j],exam10[i]]; }
+  exams.push(exam10);
+
+  // render buttons
+  const btns = document.getElementById('exam-buttons'); btns.innerHTML='';
+  for(let i=0;i<exams.length;i++){
+    const b = document.createElement('button'); b.className='btn exam-btn'; b.style.background='#0b74b5';
+    b.textContent = `Đề ${i+1}`;
+    b.onclick = ()=>openExam(i);
+    btns.appendChild(b);
+  }
+  document.getElementById('exams').style.display='block';
+  setStatus(`Đã tạo ${exams.length} đề. Chọn đề để làm.`);
+}
+
+// open exam
+function openExam(idx){
+  currentExam = exams[idx];
+  userAnswers = new Array(currentExam.length).fill(null);
+  const ev = document.getElementById('exam-view'); ev.innerHTML='';
+  const title = document.createElement('h4'); title.textContent = `Đề ${idx+1} — ${currentExam.length} câu`;
+  ev.appendChild(title);
+  currentExam.forEach((qObj, qIdx)=>{
+    const qDiv = document.createElement('div'); qDiv.style.padding='12px'; qDiv.style.borderBottom='1px solid #eef';
+    qDiv.id = `q-${qIdx}`;
+    const qTitle = document.createElement('div'); qTitle.style.fontWeight='700'; qTitle.textContent = `${qIdx+1}. ${qObj.q}`;
+    qDiv.appendChild(qTitle);
+    // shuffle options display order to avoid bias
+    const opts = qObj.options.map((o,i)=>({text:o,letter:String.fromCharCode(65+i)}));
+    // shuffle opts each time
+    for(let i=opts.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[opts[i],opts[j]]=[opts[j],opts[i]];}
+    opts.forEach(opt=>{
+      const p = document.createElement('div'); p.className='option'; p.style.cursor='pointer';
+      p.innerHTML = `<span style="font-weight:600;margin-right:8px">${opt.letter}.</span> <span>${opt.text}</span>`;
+      p.onclick = ()=> {
+        // allow change before submission
+        // clear previous highlights
+        const siblings = qDiv.querySelectorAll('.option'); siblings.forEach(s=>{s.style.background=''; s.classList.remove('selected');});
+        p.classList.add('selected'); p.style.background='#e8f6ff';
+        userAnswers[qIdx] = opt.text;
+      };
+      qDiv.appendChild(p);
+    });
+    ev.appendChild(qDiv);
+  });
+
+  const footer = document.createElement('div'); footer.style.textAlign='center'; footer.style.marginTop='12px';
+  const submitBtn = document.createElement('button'); submitBtn.className='btn'; submitBtn.textContent = 'Nộp bài & Chấm điểm';
+  submitBtn.onclick = ()=> finishExam();
+  footer.appendChild(submitBtn);
+  ev.appendChild(footer);
+  document.getElementById('exam-result').style.display='none';
+  window.scrollTo({top:0,behavior:'smooth'});
+}
+
+function finishExam(){
+  if(!confirm('Bạn có chắc chắn muốn nộp bài không?')) return;
+  // grade
+  let score = 0;
+  const total = currentExam.length;
+  const ev = document.getElementById('exam-view');
+  currentExam.forEach((item, idx)=>{
+    const qDiv = document.getElementById(`q-${idx}`);
+    const optionsDivs = qDiv.querySelectorAll('.option');
+    const userAns = userAnswers[idx];
+    // find correct option by matching item.a text (if available)
+    let correctText = item.a ? item.a.trim() : null;
+    // If item.answerLetter exists but item.a null, try to map via original options
+    if(!correctText && item.answerLetter){
+      const pos = ['A','B','C','D'].indexOf(item.answerLetter);
+      if(pos>=0 && item.options[pos]) correctText = item.options[pos].trim();
+    }
+    optionsDivs.forEach(optEl=>{
+      const optText = optEl.innerText.replace(/^[A-D]\\./,'').trim();
+      // mark correct
+      if(correctText && optText.trim() === correctText.trim()){
+        optEl.classList.add('correct');
+        optEl.style.borderColor='green';
+      }
+      // user selected?
+      if(userAns && optText.trim() === userAns.trim()){
+        if(correctText && optText.trim() === correctText.trim()){
+          score++;
+          optEl.style.background='#daf7dc';
+        } else {
+          optEl.style.background='#ffe3e3';
+          optEl.classList.add('incorrect');
+        }
+      }
+      // disable click
+      optEl.style.pointerEvents='none';
+    });
+
+    // If no correctText known, reveal message
+    if(!correctText){
+      const note = document.createElement('div'); note.className='small muted';
+      note.textContent = 'LƯU Ý: Đáp án gốc không được tìm thấy trong PDF cho câu này. Anh Long vui lòng cập nhật đáp án nếu cần.';
+      qDiv.appendChild(note);
+    }
+  });
+
+  const percent = Math.round((score/total)*100);
+  const pass = percent >= 70; // mặc định 70% là pass (anh thay đổi được)
+  const resultBox = document.getElementById('exam-result');
+  resultBox.style.display='block';
+  resultBox.innerHTML = `<h3>Kết quả: ${score} / ${total} (${percent}%)</h3><div class="small muted">Đánh giá: <b>${pass? 'Đỗ ✅' : 'Chưa đạt ❌'}</b></div><div style="margin-top:8px">${percent>=90? 'Tốt (Rất xuất sắc)':''}</div><div style="margin-top:8px"><button class="btn" onclick="exportResultsCSV()">Xuất kết quả (CSV)</button> <button class="btn" onclick="showReview()">Xem lại toàn bộ bài</button></div>`;
+  resultBox.scrollIntoView({behavior:'smooth'});
+}
+
+// Show review (scrolls to top and ensures answers visible)
+function showReview(){
+  window.scrollTo({top:0,behavior:'smooth'});
+  // add anchor to each question if needed (already shown)
+}
+
+// Export results to CSV (simple)
+function exportResultsCSV(){
+  if(!currentExam) return alert('Chưa có bài thi để xuất.');
+  let csv = 'STT,Question,OptionA,OptionB,OptionC,OptionD,CorrectAnswer,UserAnswer,IsCorrect\\n';
+  currentExam.forEach((it,idx)=>{
+    const opts = it.options.concat(['','','','']).slice(0,4).map(s=>'"'+(s? s.replace(/"/g,'""'):'')+'"');
+    const correct = it.a ? ('"'+it.a.replace(/"/g,'""')+'"') : '""';
+    const user = userAnswers[idx] ? ('"'+userAnswers[idx].replace(/"/g,'""')+'"') : '""';
+    const isCorrect = (it.a && userAnswers[idx] && it.a.trim()===userAnswers[idx].trim()) ? '1' : '0';
+    csv += `${idx+1},"${it.q.replace(/"/g,'""')}",${opts.join(',')},${correct},${user},${isCorrect}\\n`;
+  });
+  const blob = new Blob([csv],{type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a'); a.href = url; a.download = 'ketqua_thi.csv'; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// UI bindings
+document.getElementById('btn-load').addEventListener('click', ()=>loadPdfAndParse());
+document.getElementById('btn-quick').addEventListener('click', ()=>renderQuickPreview(100000)); // show all
+document.getElementById('btn-gen').addEventListener('click', ()=>generateExams());
+document.getElementById('btn-search').addEventListener('click', ()=>{ const t=document.getElementById('search').value.trim(); searchQuestions(t); });
+document.getElementById('search').addEventListener('keydown',(e)=>{ if(e.key==='Enter'){ document.getElementById('btn-search').click(); }});
+
+</script>
+</body>
+</html>
